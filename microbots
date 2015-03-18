@@ -1,0 +1,383 @@
+#!/usr/bin/expect -f
+
+#used for debugging, uncomment exp_internal 1 to show inner workings of expect script including regex
+#exp_internal 1
+
+#used for outputting the operations of automated commands
+#set log_user to 1 to show telnet activity, set to 0 to hide it and only show status messages 
+log_user 0
+
+#####init global variables#####
+#used for tracking how many microbots a user has
+global microbots
+set microbots 0
+
+#used for tracking how much xp a user has
+global xp
+set xp 0
+
+#used for the title bar of a terminal window
+#contains the pretty printed XP and microbots a user has concatenated together
+global statusstring
+set statusstring ""
+
+#used for tracking performance of the script and for determining the time remaining
+global actionspersecond
+set actionspersecond 0
+
+#Use Todd Coram's config file parser
+namespace eval cfg {
+    variable version 1.0
+
+    variable sections [list DEFAULT]
+
+    variable cursection DEFAULT
+    variable DEFAULT;   # DEFAULT section
+ }
+
+ proc cfg::sections {} {
+    return $cfg::sections
+ }
+
+ proc cfg::variables {{section DEFAULT}} {
+    return [array names ::cfg::$section]
+ }
+
+ proc cfg::add_section {str} {
+    variable sections
+    variable cursection
+
+    set cursection [string trim $str \[\]]
+    if {[lsearch -exact $sections $cursection] == -1} {
+      lappend sections $cursection
+      variable ::cfg::${cursection}
+    }
+ }
+
+ proc cfg::setvar {varname value {section DEFAULT}} {
+    variable sections
+    if {[lsearch -exact $sections $section] == -1} {
+      cfg::add_section $section
+    }
+    set ::cfg::${section}($varname) $value
+ }
+
+ proc cfg::getvar {varname {section DEFAULT}} {
+    variable sections
+    if {[lsearch -exact $sections $section] == -1} {
+      error "No such section: $section"
+    }
+   return [set ::cfg::${section}($varname)]
+ }
+
+
+ proc cfg::parse_file {filename} {
+    variable sections
+    variable cursection
+    set line_no 1
+    set fd [open $filename r]
+    while {![eof $fd]} {
+        set line [string trim [gets $fd] " "]
+        if {$line == ""} continue
+        switch -regexp -- $line {
+           ^#.* { }
+           ^\\[.*\\]$ {
+               cfg::add_section $line
+           }
+           .*=.* {
+               set pair [split $line =]
+               set name [string trim [lindex $pair 0] " "]
+               set value [string trim [lindex $pair 1] " "]
+               cfg::setvar $name $value $cursection
+           } 
+           default {
+               error "Error parsing $filename (line: $line_no): $line"
+           }
+         }
+       incr line_no
+     }
+     close $fd
+}
+
+#load config file
+if { [catch {cfg::parse_file microbots_config} fid] } {
+    puts "Could not open microbots_config, it may not exist or is corrupt.\n$fid"
+    exit
+}
+
+#check to see if config file has default username and password
+if {$cfg::DEFAULT(Username) == "\<enter username here\>" || $cfg::DEFAULT(Password) == "\<enter password here\>"} {
+ puts "Error, microbots_config file contains default username or password"
+ exit 1
+}
+
+#autotrading routine that simply presses "C" until specified conditions are met
+proc autotrade {totalsteps targetmicrobots targetxp} {
+    global statusstring
+    global microbots
+    global xp
+    global actionspersecond
+    set timeremaining ""
+    #used for determining the total time it takes to complete the autotrading routine
+    set beginautotradetime [clock clicks -milliseconds]
+
+    #Case 1: keep autotrading until you have the number of microbots you want
+    if {$targetmicrobots != 0 && $targetxp == 0 && $totalsteps == 0} {
+        set i 0
+        #pretty print the number of microbots you want
+        set targetmicrobotsstring [insertcommas $targetmicrobots]
+        #used to know how many microbots you start out with at the beginning of the autotrading routine
+        set beginmicrobots $microbots
+        #keep autotrading until you have the number of microbots you want 
+        while {$microbots <= $targetmicrobots} {
+            set begintime [clock clicks -milliseconds]
+            if {$i % 100 == 0} {
+                updateplayerinfo
+                set xpstring [insertcommas $xp]
+                set microbotsstring [insertcommas $microbots]
+                if {$i != 0} {
+                    set newmicrobots [expr $microbots - $beginmicrobots]
+                    set time [expr 100 / $actionspersecond]
+                    set microbotspersecond [expr $newmicrobots / $time]
+                    set timeremaining [duration [expr int([expr $targetmicrobots - $microbots] / $microbotspersecond)]]
+                    set beginmicrobots $microbots
+                }
+            }   
+            #execute one trade
+            trade
+            incr i 1
+            set step [expr $i + 1]
+            #
+            updatetitle "$actionspersecond\ $step\ $microbotsstring\\$targetmicrobotsstring\ XP:$xpstring\ $timeremaining"
+            send_user "\n$actionspersecond\ $step\ $microbotsstring\\$targetmicrobotsstring\ XP:$xpstring\ $timeremaining"
+            set endtime [clock clicks -milliseconds]
+            set actionspersecond [format "%.2f" [expr [expr [expr $actionspersecond * $i] + [expr 1 / [expr [expr $endtime - $begintime] / 1000.000]]] / $step]]
+        }
+    }
+    #Case 2: keep autotrading until you have the xp you want 
+    elseif {$targetxp != 0 && $targetmicrobots == 0 && $totalsteps == 0} {
+        set i 0
+        set targetxpstring [insertcommas $targetxp]
+        set beginxp $xp
+        while {$xp < $targetxp} {               
+            set begintime [clock clicks -milliseconds]
+            if {$i % 100 == 0} {
+                updateplayerinfo
+                set xpstring [insertcommas $xp]
+                set microbotsstring [insertcommas $microbots]
+                if {$i != 0} {
+                    set newxp [expr $xp - $beginxp]
+                    set time [expr 100 / $actionspersecond]
+                    set xppersecond [expr $newxp / $time]
+                    set timeremaining [duration [expr int([expr $targetxp - $xp] / $xppersecond)]]
+                    set beginxp $xp
+                }
+            } 
+            trade
+            incr i 1
+            set step [expr $i + 1]
+            updatetitle "$actionspersecond\ $step\ \$$microbotsstring\ XP:$xpstring\\$targetxpstring\ $timeremaining"
+            send_user "\n$actionspersecond\ $step\ \$$microbotsstring\ XP:$xpstring\\$targetxpstring\ $timeremaining"
+            set endtime [clock clicks -milliseconds]
+            set actionspersecond [format "%.2f" [expr [expr [expr $actionspersecond * $i] + [expr 1 / [expr [expr $endtime - $begintime] / 1000.000]]] / $step]]
+        }
+    }
+    #Case 3: autotrade for a specified number of iterations
+    elseif {$totalsteps != 0 && $targetmicrobots == 0 && $targetxp == 0} {
+        for {set i 0} {$i < $totalsteps} {incr i 1} {
+            set begintime [clock clicks -milliseconds]
+            if {$i % 100 == 0} {
+                updateplayerinfo
+                #Only calculate the time remaining after the first iteration, as the time to complete one action is unavailable
+                if {$i != 0} {
+                    set timeremaining [duration [expr int([expr $totalsteps - $step] / $actionspersecond)]]
+                }
+            } 
+            trade
+            set step [expr $i + 1]
+            updatetitle "$actionspersecond\ $step\\$totalsteps\ $statusstring\ $timeremaining"
+            send_user "\n$actionspersecond\ $step\\$totalsteps\ $statusstring\ $timeremaining"
+            set endtime [clock click -milliseconds]
+            set actionspersecond [format "%.2f" [expr [expr [expr $actionspersecond * $i] + [expr 1 / [expr [expr $endtime - $begintime] / 1000.000]]] / $step]]
+         }
+    }
+    else {
+        puts "$totalsteps $targetmicrobots $targetxp"
+        puts "\nMust choose only one criteria: Total iterations, Target microbots, or Target XP"
+        return
+    }
+    set finishautotradetime [clock clicks -milliseconds]
+    puts "\nCompleted autotrade in [duration [expr int($finishautotradetime - $beginautotradetime) / 1000]]" 
+    updateplayerinfo
+    updatetitle $statusstring
+    return
+}
+
+#Use duration routine found in online forum
+proc duration { int_time } {
+    set timeList [list]
+    foreach div {86400 3600 60 1} mod {0 24 60 60} name {day hr min sec} {
+        set n [expr {$int_time / $div}]
+        if {$mod > 0} {set n [expr {$n % $mod}]}
+        if {$n > 1} {
+            lappend timeList "$n ${name}s"
+        }
+        elseif {$n == 1} {
+            lappend timeList "$n $name"
+        }
+    }
+    return [join $timeList]
+}
+
+proc trade {} {
+    send "\r"
+    set timeout 5
+    expect {
+        timeout {send "\r"}
+        -re "choice: $"
+    }
+    send "C"
+    set timout 1
+}
+
+#Routine for navigating to any sector within a star system with repeated autonavigate "0" commands
+proc autonav {sector} {
+    set arrived false
+    while {!$arrived} {
+        send "\r"
+        expect -re "choice: $"
+        send "0"
+        #look for the autonavigation prompt and capture the result
+        expect -re "(\\d+)\\-(\\d+)\\):\\ $"
+        #the regex captures the lowest and highest number sector you can autonavigate to
+        set minsector $expect_out(1,string)
+        set maxsector $expect_out(2,string)
+        #go to the lowest sector if the desired sector is outside the range
+        if {$sector < $minsector} {
+            set desiredsector $minsector
+        }
+        #go to the highest sector if the desire sector is outside the range
+        elseif {$sector > $maxsector} {
+            set desiredsector $maxsector
+        }
+        #go directly to the desired sector
+        else {
+            set desiredsector $sector
+            set arrived true
+        }
+        #send the desired sector number to the propt
+        send "$desiredsector\r"
+        #look to see that the autonavigation has finished finding a route
+        expect -re "choice: $"
+        #follow the autonavigation route by sending the "\" key
+        send "\/"
+    }
+    send "\r"
+}
+
+#pretty prints numbers by inserting commas for thousands, millions, etc
+proc insertcommas {number} {
+    set numberlength [string length $number]
+    set numcommas [expr [expr $numberlength / 3] - [expr $numberlength % 3]]
+    set numberwithcommas ""
+    for {set n 0} {$n < [expr $numberlength + 1]} {incr n 1} {
+        if {$n != 1 && [expr $n - 1] % 3 == 0} {set numberwithcommas ",$numberwithcommas"}
+            set numberwithcommas "[string index $number [expr $numberlength - $n]]$numberwithcommas"
+    }
+    return $numberwithcommas
+}
+
+#updates the terminal title with the title string
+proc updatetitle {title} {
+    puts "\033]2;$title\007"
+}
+
+#Runs the inventory "I" command and parses the output for xp and microbots
+proc updateplayerinfo {} {
+    global microbots
+    global xp
+    global statusstring
+    send "\r"
+    #look for the main prompt
+    expect -re "choice: $"
+    #send the inventory "I" command
+    send "I"
+    set timeout -1
+    #look for the XP and microbots in the output from the inventory command
+    expect -re "^.+Experience\\\(XP\\\)\\\:\\ (\\d+).+Microbots\\ \\\(\\\$\\\)\\\:\\ (\\d+)"
+    set xp $expect_out(1,string) 
+    set microbots $expect_out(2,string)
+    set microbotsstring [insertcommas $microbots]
+    set xpstring [insertcommas $xp]
+    set statusstring "\$$microbotsstring\ XP\:$xpstring"
+}
+
+#asks the user for a number and returns the integer
+proc ask {question} {
+    set timeout -1
+    while {1} {
+        send_user $question
+        stty echo
+        expect_user {
+            -re "(^\\d+)\\r" {set output $expect_out(1,string); break}
+            -re "(.+)\\r" {send_user "\nInvalid entry, must be a number."}
+            -re "\\r" {set output 0; break}
+        }
+    }
+    stty -echo
+    return $output
+}
+
+#activates the microbots hidden menu when the user presses "`"
+proc interactivemenu {} {
+    while {1} {
+        interact {
+        ` {beginmenu}
+        }
+    }
+} 
+     
+#outputs the hidden menu items and looks for user choices
+proc beginmenu {} {
+    global statusstring
+    set timeout -1
+    while {1} {
+        send_user "\nMenu Options:\nAutotrade(a)\nAuto Navigate(n)\nShow Player Stats(s)\nExit Menu(x)\nMenu Choice:"
+        stty echo
+        expect_user {
+            -re "(a|A)" {
+                puts "\nEnter one of the following critera:"
+                set totalsteps [ask "\nNumber of iterations\[Auto\]: "]
+                set targetmicrobots [ask "\nTarget microbots\[Auto\]: "]
+                set targetxp [ask "\nTarget XP\[Auto\]: "]
+                autotrade $totalsteps $targetmicrobots $targetxp
+                break
+            }
+            -re "(n|N)" {
+                autonav [ask "\nWhich sector?: "]
+                break
+            }
+            -re "(s|S)" {
+                updateplayerinfo
+		        updatetitle $statusstring 
+                puts $statusstring
+                send "\r"
+                break
+            }
+            -re "(t|T)" {puts [insertcommas [ask "\nTest commas addition: "]]}
+            -re "(x|X)" {send "\r"; break}
+            -re "(.+)" {send_user "\nInvalid option"}
+        }
+    }
+    stty -echo
+}
+
+#login to the textMMOde server
+spawn telnet textmmode.com
+expect "Enter your playername (spaces are allowed): "
+send "$cfg::DEFAULT(Username)\r"
+expect "Please enter your password: "
+send "$cfg::DEFAULT(Password)\r"
+
+#run the hidden menu after login
+interactivemenu

@@ -1,0 +1,3 @@
+#ignore my scripts
+*.sh
+*.default
