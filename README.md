@@ -4,10 +4,11 @@ The script adds a menu for completely automated trading and navigation to any se
 
 ##Getting Started##
 1. Make sure you have [Expect](http://en.wikipedia.org/wiki/Expect) installed  
-    You can download it (Windows/Linux) [here](http://expect.sourceforge.net/)  
-    If you have a Debian/Ubuntu based system, simply ```sudo apt-get install expect```
+    You can download it (Windows/Linux) [here](http://expect.sourceforge.net/).  
+    If you have a Debian/Ubuntu based system, simply ```sudo apt-get install expect```.  
+    Mac OS X users should have Expect installed already.
 
-2. Clone the repo here or download the zip file
+2. Clone the repo [here](https://github.com/robertlarue/microbots.git) or download the [zip file](https://github.com/robertlarue/microbots/archive/master.zip)
 
 3. Open the microbots directory
 
@@ -15,10 +16,10 @@ The script adds a menu for completely automated trading and navigation to any se
     Replace ```<enter username here>``` with your username  
     Replace ```<enter password here>``` with you password
 
-5. Then run the microbots script  
-   On Windows or Linux:  
+5. Then run the microbots script from a terminal  
+   On all platforms:  
     ```expect -f microbots```  
-   On Linux only:
+   On Linux/OS X only:
    Make the script executable and run it   
    `chmod 777 microbots`  
    `./microbots`  
